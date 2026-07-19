@@ -1,0 +1,44 @@
+name: iBetaBot
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"  # every 30 minutes
+  workflow_dispatch: {}       # allows manual runs from the Actions tab
+
+permissions:
+  contents: write            # needed to commit the updated state file back
+
+concurrency:
+  group: ibeta-bot
+  cancel-in-progress: false  # never cancel a run that's already sending a message
+
+jobs:
+  check-releases:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run iBetaBot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python ibeta_bot.py
+
+      - name: Persist last known state
+        run: |
+          if ! git diff --quiet -- ibeta_last_state.txt; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add ibeta_last_state.txt
+            git commit -m "chore: update last known release state"
+            git push
+          fi

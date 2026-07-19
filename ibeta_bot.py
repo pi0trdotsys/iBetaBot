@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 
-import requests
-import re
+import logging
 import os
-from datetime import datetime
+import re
+
+import requests
 from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # -------------------------------
 # LOAD ENVIRONMENT VARIABLES
@@ -20,6 +23,18 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
 
 # File for storing the last state (in the same directory as script)
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ibeta_last_state.txt")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger("ibeta_bot")
+
+# Shared HTTP session with retry/backoff for transient network errors
+session = requests.Session()
+retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+session.mount("https://", HTTPAdapter(max_retries=retries))
+session.mount("http://", HTTPAdapter(max_retries=retries))
 
 
 # -------------------------------
@@ -43,29 +58,38 @@ def save_state(state):
 # TELEGRAM NOTIFICATIONS
 # -------------------------------
 def send_telegram(message):
+    """Returns True if Telegram confirmed delivery, False otherwise."""
     endpoint = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
         "text": message
     }
     try:
-        r = requests.post(endpoint, json=payload, timeout=10)
-        print("Telegram status:", r.status_code)
+        r = session.post(endpoint, json=payload, timeout=10)
+        if r.ok:
+            logger.info("Telegram message sent (status %s)", r.status_code)
+            return True
+        logger.error("Telegram API rejected message: status %s, body %s", r.status_code, r.text)
+        return False
     except requests.RequestException as e:
-        print(f"❌ Failed to send Telegram message: {e}")
+        logger.error("Failed to send Telegram message: %s", e)
+        return False
 
 
 # -------------------------------
 # MAIN FUNCTION
 # -------------------------------
+PARSE_ERROR_STATE = "PARSE_ERROR"
+
+
 def run():
     last_state = get_last_state()
 
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        html = requests.get(URL, headers=headers, timeout=10).text
+        html = session.get(URL, headers=headers, timeout=10).text
     except requests.RequestException as e:
-        print(f"❌ Failed to fetch releases from {URL}: {e}")
+        logger.error("Failed to fetch releases from %s: %s", URL, e)
         return
 
     # Extract all latest items: system, version, release date
@@ -76,22 +100,31 @@ def run():
     )
 
     if not matches:
-        print("❌ No releases found in HTML")
+        logger.error("No releases found in HTML – page structure may have changed")
+        # Alert once, not on every cron run, until the page is parseable again
+        if last_state != PARSE_ERROR_STATE:
+            alert = (
+                "⚠️ iBetaBot: no releases found on the page.\n"
+                "The site structure may have changed and the scraper needs updating.\n"
+                f"🌐 {URL}"
+            )
+            if send_telegram(alert):
+                save_state(PARSE_ERROR_STATE)
         return
 
     releases = []
     for system, version, suffix, date_text in matches:
-        # Dodaj suffix (RC/Beta) jeśli jest
+        # Add suffix (RC/Beta) if present
         full_version = f"{system} {version}"
         if suffix:
             full_version += f" {suffix}"
         releases.append((full_version, date_text.strip()))
 
-    # Current state = pierwsza wersja + jej data
+    # Current state = latest version + its date
     first_release, first_date = releases[0]
     current_state = f"{first_release} | {first_date}"
 
-    # Jeśli plik pusty lub stan się zmienił → wysyłamy
+    # If state changed (or file was empty) → notify
     if last_state != current_state:
         message_lines = [f"🔹 {r[0]} – {r[1]}" for r in releases]
         message = (
@@ -100,11 +133,13 @@ def run():
             + f"\n\n🌐 Details: {URL}"
         )
 
-        send_telegram(message)
-        save_state(current_state)
-        print("✅ New release saved as last state")
+        if send_telegram(message):
+            save_state(current_state)
+            logger.info("New release saved as last state")
+        else:
+            logger.error("Telegram send failed – state NOT updated, will retry next run")
     else:
-        print("ℹ️ No new releases – skipping notification")
+        logger.info("No new releases – skipping notification")
 
 
 if __name__ == "__main__":

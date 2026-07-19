@@ -92,9 +92,11 @@ def run():
         logger.error("Failed to fetch releases from %s: %s", URL, e)
         return
 
-    # Extract all latest items: system, version, release date
+    # Extract all latest items: system, version, suffix (beta/RC label), build, release date
     matches = re.findall(
-        r'<h3 class="fs-6 m-0 fw-semibold">([A-Za-z]+)\s+([0-9\.]+)\s*(RC|Beta)?\s*\([0-9A-Z]+\)</h3>\s*<p class="mb-0"><small>(.*?)</small>',
+        r'<h3 class="font-semibold text-gray-900 dark:text-gray-100">([A-Za-z]+)\s+([0-9][0-9.]*)\s*(.*?)</h3>\s*'
+        r'<p class="font-mono text-sm">([0-9A-Za-z]+)</p>\s*'
+        r'<p[^>]*>\s*<span class="text-sm">(.*?)</span>',
         html,
         flags=re.DOTALL
     )
@@ -113,20 +115,20 @@ def run():
         return
 
     releases = []
-    for system, version, suffix, date_text in matches:
-        # Add suffix (RC/Beta) if present
+    for system, version, suffix, build, date_text in matches:
+        # Add suffix (beta N / RC / v2 etc.) if present
         full_version = f"{system} {version}"
         if suffix:
             full_version += f" {suffix}"
-        releases.append((full_version, date_text.strip()))
+        releases.append((full_version, build.strip(), date_text.strip()))
 
-    # Current state = latest version + its date
-    first_release, first_date = releases[0]
-    current_state = f"{first_release} | {first_date}"
+    # Current state = latest version + its build + its date
+    first_release, first_build, first_date = releases[0]
+    current_state = f"{first_release} ({first_build}) | {first_date}"
 
     # If state changed (or file was empty) → notify
     if last_state != current_state:
-        message_lines = [f"🔹 {r[0]} – {r[1]}" for r in releases]
+        message_lines = [f"🔹 {r[0]} ({r[1]}) – {r[2]}" for r in releases]
         message = (
             "🚀 New beta releases available! 🚀\n\n"
             + "\n".join(message_lines)

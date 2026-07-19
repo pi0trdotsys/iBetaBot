@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import time
 
 import requests
 from dotenv import load_dotenv
@@ -81,25 +82,43 @@ def send_telegram(message):
 # -------------------------------
 PARSE_ERROR_STATE = "PARSE_ERROR"
 
+RELEASE_PATTERN = re.compile(
+    r'<h3 class="font-semibold text-gray-900 dark:text-gray-100">([A-Za-z]+)\s+([0-9][0-9.]*)\s*(.*?)</h3>\s*'
+    r'<p class="font-mono text-sm">([0-9A-Za-z]+)</p>\s*'
+    r'<p[^>]*>\s*<span class="text-sm">(.*?)</span>',
+    flags=re.DOTALL
+)
+
+
+def fetch_html():
+    headers = {"User-Agent": "Mozilla/5.0"}
+    return session.get(URL, headers=headers, timeout=10).text
+
 
 def run():
     last_state = get_last_state()
 
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        html = session.get(URL, headers=headers, timeout=10).text
+        html = fetch_html()
     except requests.RequestException as e:
         logger.error("Failed to fetch releases from %s: %s", URL, e)
         return
 
     # Extract all latest items: system, version, suffix (beta/RC label), build, release date
-    matches = re.findall(
-        r'<h3 class="font-semibold text-gray-900 dark:text-gray-100">([A-Za-z]+)\s+([0-9][0-9.]*)\s*(.*?)</h3>\s*'
-        r'<p class="font-mono text-sm">([0-9A-Za-z]+)</p>\s*'
-        r'<p[^>]*>\s*<span class="text-sm">(.*?)</span>',
-        html,
-        flags=re.DOTALL
-    )
+    matches = RELEASE_PATTERN.findall(html)
+
+    if not matches:
+        # A single empty result can be a transient blip (stale cache, WAF
+        # challenge page, mid-deploy hiccup on their end) rather than a real
+        # markup change, so re-fetch once before treating it as broken.
+        logger.warning("No releases found on first attempt, retrying fetch once...")
+        time.sleep(5)
+        try:
+            html = fetch_html()
+        except requests.RequestException as e:
+            logger.error("Retry fetch from %s failed: %s", URL, e)
+            return
+        matches = RELEASE_PATTERN.findall(html)
 
     if not matches:
         logger.error("No releases found in HTML – page structure may have changed")

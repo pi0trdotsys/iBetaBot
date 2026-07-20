@@ -119,6 +119,16 @@ def send_heartbeat_if_due():
 # -------------------------------
 PARSE_ERROR_STATE = "PARSE_ERROR"
 
+# Historical pattern only (ipsw.dev tracks developer betas exclusively, there's
+# no live public-beta source to compute an exact offset): Apple's Public Beta
+# has usually landed around Developer Beta 3, but slipped to Beta 4 for iOS 26
+# due to the Liquid Glass redesign, and point releases (x.y) tend to lag less
+# than major (x.0) ones. Treat this as a rough expectation, not a guarantee.
+PUBLIC_BETA_NOTE = (
+    "ℹ️ Public Beta usually follows around Developer Beta 3 (sometimes Beta 4 "
+    "for major .0 releases) — historical pattern, not a guarantee each cycle."
+)
+
 RELEASE_PATTERN = re.compile(
     r'<h3 class="font-semibold text-gray-900 dark:text-gray-100">([A-Za-z]+)\s+([0-9][0-9.]*)\s*(.*?)</h3>\s*'
     r'<p class="font-mono text-sm">([0-9A-Za-z]+)</p>\s*'
@@ -188,6 +198,8 @@ def run():
         message_lines = [f"🔹 {r[0]} ({r[1]}) – {r[2]}" for r in releases]
         message = (
             "🚀 New beta releases available! 🚀\n\n"
+            + PUBLIC_BETA_NOTE
+            + "\n\n"
             + "\n".join(message_lines)
             + f"\n\n🌐 Details: {URL}"
         )

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import html
 import logging
 import os
 import re
@@ -77,7 +78,9 @@ def send_telegram(message):
     endpoint = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
-        "text": message
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
     }
     try:
         r = session.post(endpoint, json=payload, timeout=10)
@@ -105,9 +108,9 @@ def send_heartbeat_if_due():
     last_state = get_last_state()
     known_release = last_state if last_state and last_state != PARSE_ERROR_STATE else None
 
-    lines = ["✅ iBetaBot heartbeat – bot is running fine."]
+    lines = ["✅ <b>iBetaBot heartbeat</b> — bot is running fine."]
     if known_release:
-        lines.append(f"Last known version: {known_release}")
+        lines.append(f"Last known version: <code>{html.escape(known_release)}</code>")
     lines.append(f"Checked: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
 
     if send_telegram("\n".join(lines)):
@@ -125,9 +128,12 @@ PARSE_ERROR_STATE = "PARSE_ERROR"
 # due to the Liquid Glass redesign, and point releases (x.y) tend to lag less
 # than major (x.0) ones. Treat this as a rough expectation, not a guarantee.
 PUBLIC_BETA_NOTE = (
-    "ℹ️ Public Beta usually follows around Developer Beta 3 (sometimes Beta 4 "
+    "Public Beta usually follows around Developer Beta 3 (sometimes Beta 4 "
     "for major .0 releases) — historical pattern, not a guarantee each cycle."
 )
+
+# Apple's conventional platform ordering, used to sort each version group
+SYSTEM_ORDER = ["iOS", "iPadOS", "macOS", "tvOS", "visionOS", "audioOS", "watchOS"]
 
 RELEASE_PATTERN = re.compile(
     r'<h3 class="font-semibold text-gray-900 dark:text-gray-100">([A-Za-z]+)\s+([0-9][0-9.]*)\s*(.*?)</h3>\s*'
@@ -142,17 +148,60 @@ def fetch_html():
     return session.get(URL, headers=headers, timeout=10).text
 
 
+def _version_sort_key(version):
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return (0,)
+
+
+def _system_sort_key(system):
+    try:
+        return SYSTEM_ORDER.index(system)
+    except ValueError:
+        return len(SYSTEM_ORDER)
+
+
+def build_release_message(matches):
+    """Groups the raw regex matches by OS version (e.g. all 27.0 builds
+    together, all 26.6 builds together) instead of the site's interleaved
+    order, so related platforms read as one block."""
+    groups = {}
+    for system, version, suffix, build, date_text in matches:
+        groups.setdefault(version.strip(), []).append(
+            (system.strip(), suffix.strip(), build.strip(), date_text.strip())
+        )
+
+    sections = []
+    for version in sorted(groups, key=_version_sort_key, reverse=True):
+        items = sorted(groups[version], key=lambda item: _system_sort_key(item[0]))
+        lines = [f"<b>{html.escape(version)}</b>"]
+        for system, suffix, build, date_text in items:
+            label = html.escape(system)
+            if suffix:
+                label += f" {html.escape(suffix)}"
+            lines.append(f"🔹 {label} — <code>{html.escape(build)}</code> ({html.escape(date_text)})")
+        sections.append("\n".join(lines))
+
+    return (
+        "🚀 <b>New beta releases available!</b>\n\n"
+        f"ℹ️ <i>{html.escape(PUBLIC_BETA_NOTE)}</i>\n\n"
+        + "\n\n".join(sections)
+        + f"\n\n🌐 <a href=\"{URL}\">Details</a>"
+    )
+
+
 def run():
     last_state = get_last_state()
 
     try:
-        html = fetch_html()
+        page_html = fetch_html()
     except requests.RequestException as e:
         logger.error("Failed to fetch releases from %s: %s", URL, e)
         return
 
     # Extract all latest items: system, version, suffix (beta/RC label), build, release date
-    matches = RELEASE_PATTERN.findall(html)
+    matches = RELEASE_PATTERN.findall(page_html)
 
     if not matches:
         # A single empty result can be a transient blip (stale cache, WAF
@@ -161,20 +210,20 @@ def run():
         logger.warning("No releases found on first attempt, retrying fetch once...")
         time.sleep(5)
         try:
-            html = fetch_html()
+            page_html = fetch_html()
         except requests.RequestException as e:
             logger.error("Retry fetch from %s failed: %s", URL, e)
             return
-        matches = RELEASE_PATTERN.findall(html)
+        matches = RELEASE_PATTERN.findall(page_html)
 
     if not matches:
         logger.error("No releases found in HTML – page structure may have changed")
         # Alert once, not on every cron run, until the page is parseable again
         if last_state != PARSE_ERROR_STATE:
             alert = (
-                "⚠️ iBetaBot: no releases found on the page.\n"
+                "⚠️ <b>iBetaBot: no releases found on the page.</b>\n"
                 "The site structure may have changed and the scraper needs updating.\n"
-                f"🌐 {URL}"
+                f"🌐 <a href=\"{URL}\">{URL}</a>"
             )
             if send_telegram(alert):
                 save_state(PARSE_ERROR_STATE)
@@ -195,14 +244,7 @@ def run():
 
     # If state changed (or file was empty) → notify
     if last_state != current_state:
-        message_lines = [f"🔹 {r[0]} ({r[1]}) – {r[2]}" for r in releases]
-        message = (
-            "🚀 New beta releases available! 🚀\n\n"
-            + PUBLIC_BETA_NOTE
-            + "\n\n"
-            + "\n".join(message_lines)
-            + f"\n\n🌐 Details: {URL}"
-        )
+        message = build_release_message(matches)
 
         if send_telegram(message):
             save_state(current_state)

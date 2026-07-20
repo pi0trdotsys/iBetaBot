@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 
 import requests
 from dotenv import load_dotenv
@@ -24,6 +25,7 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
 
 # File for storing the last state (in the same directory as script)
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ibeta_last_state.txt")
+HEARTBEAT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ibeta_heartbeat_state.txt")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +57,18 @@ def save_state(state):
         f.write(state)
 
 
+def get_last_heartbeat_date():
+    if not os.path.exists(HEARTBEAT_FILE):
+        return ""
+    with open(HEARTBEAT_FILE, "r") as f:
+        return f.read().strip()
+
+
+def save_heartbeat_date(date_str):
+    with open(HEARTBEAT_FILE, "w") as f:
+        f.write(date_str)
+
+
 # -------------------------------
 # TELEGRAM NOTIFICATIONS
 # -------------------------------
@@ -75,6 +89,29 @@ def send_telegram(message):
     except requests.RequestException as e:
         logger.error("Failed to send Telegram message: %s", e)
         return False
+
+
+# -------------------------------
+# HEARTBEAT
+# -------------------------------
+def send_heartbeat_if_due():
+    """Sends one 'still alive' ping per UTC calendar day, independent of
+    whether a new release was found, so silence never gets mistaken for
+    a dead bot."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if get_last_heartbeat_date() == today:
+        return
+
+    last_state = get_last_state()
+    known_release = last_state if last_state and last_state != PARSE_ERROR_STATE else None
+
+    lines = ["✅ iBetaBot heartbeat – bot is running fine."]
+    if known_release:
+        lines.append(f"Last known version: {known_release}")
+    lines.append(f"Checked: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+
+    if send_telegram("\n".join(lines)):
+        save_heartbeat_date(today)
 
 
 # -------------------------------
@@ -131,6 +168,7 @@ def run():
             )
             if send_telegram(alert):
                 save_state(PARSE_ERROR_STATE)
+        send_heartbeat_if_due()
         return
 
     releases = []
@@ -161,6 +199,8 @@ def run():
             logger.error("Telegram send failed – state NOT updated, will retry next run")
     else:
         logger.info("No new releases – skipping notification")
+
+    send_heartbeat_if_due()
 
 
 if __name__ == "__main__":

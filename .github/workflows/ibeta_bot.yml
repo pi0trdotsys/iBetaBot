@@ -31,7 +31,19 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python ibeta_bot.py
+        run: |
+          python -c "
+          import ibeta_bot as bot
+          fake_matches = [
+              ('iOS', '27.1', 'beta 1', '24B5045c', 'September 5, 2026'),
+              ('iPadOS', '27.1', 'beta 1', '24B5045c', 'September 5, 2026'),
+              ('macOS', '27.1', 'beta 1', '26B5040c', 'September 5, 2026'),
+          ]
+          message = bot.build_release_message(fake_matches)
+          message += '\n\n<i>(DEMO preview - not a real detection, state untouched)</i>'
+          ok = bot.send_telegram(message)
+          print('Demo send result:', ok)
+          "
 
       - name: Persist last known state
         run: |

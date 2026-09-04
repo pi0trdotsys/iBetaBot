@@ -27,6 +27,11 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
 # File for storing the last state (in the same directory as script)
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ibeta_last_state.txt")
 HEARTBEAT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ibeta_heartbeat_state.txt")
+# Tracks whether we've already alerted about an ONGOING parse failure, kept
+# separate from STATE_FILE so a failure never clobbers the last known real
+# release (that used to cause a spurious "new release" re-announcement of an
+# already-known version the moment parsing recovered).
+PARSE_ERROR_FLAG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ibeta_parse_error_flag.txt")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,6 +75,18 @@ def save_heartbeat_date(date_str):
         f.write(date_str)
 
 
+def get_parse_error_flag():
+    if not os.path.exists(PARSE_ERROR_FLAG_FILE):
+        return False
+    with open(PARSE_ERROR_FLAG_FILE, "r") as f:
+        return f.read().strip() == "1"
+
+
+def set_parse_error_flag(active: bool):
+    with open(PARSE_ERROR_FLAG_FILE, "w") as f:
+        f.write("1" if active else "")
+
+
 # -------------------------------
 # TELEGRAM NOTIFICATIONS
 # -------------------------------
@@ -105,8 +122,7 @@ def send_heartbeat_if_due():
     if get_last_heartbeat_date() == today:
         return
 
-    last_state = get_last_state()
-    known_release = last_state if last_state and last_state != PARSE_ERROR_STATE else None
+    known_release = get_last_state() or None
 
     lines = ["✅ <b>iBetaBot heartbeat</b> — bot is running fine."]
     if known_release:
@@ -120,8 +136,6 @@ def send_heartbeat_if_due():
 # -------------------------------
 # MAIN FUNCTION
 # -------------------------------
-PARSE_ERROR_STATE = "PARSE_ERROR"
-
 # Historical pattern only (ipsw.dev tracks developer betas exclusively, there's
 # no live public-beta source to compute an exact offset): Apple's Public Beta
 # has usually landed around Developer Beta 3, but slipped to Beta 4 for iOS 26
@@ -218,17 +232,24 @@ def run():
 
     if not matches:
         logger.error("No releases found in HTML – page structure may have changed")
-        # Alert once, not on every cron run, until the page is parseable again
-        if last_state != PARSE_ERROR_STATE:
+        # Alert once, not on every cron run, until the page is parseable again.
+        # Tracked separately from STATE_FILE so a failure never clobbers the
+        # last known real release (previously caused a spurious "new release"
+        # re-announcement the moment parsing recovered - same version as before).
+        if not get_parse_error_flag():
             alert = (
                 "⚠️ <b>iBetaBot: no releases found on the page.</b>\n"
                 "The site structure may have changed and the scraper needs updating.\n"
                 f"🌐 <a href=\"{URL}\">{URL}</a>"
             )
             if send_telegram(alert):
-                save_state(PARSE_ERROR_STATE)
+                set_parse_error_flag(True)
         send_heartbeat_if_due()
         return
+
+    # Parsing succeeded - clear any stale parse-error flag so a FUTURE failure
+    # alerts again instead of staying silent forever.
+    set_parse_error_flag(False)
 
     releases = []
     for system, version, suffix, build, date_text in matches:

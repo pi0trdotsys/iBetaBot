@@ -3,6 +3,7 @@
 **Real-time Apple beta & RC firmware watchdog — iOS, iPadOS, macOS, tvOS & visionOS builds pushed straight to Telegram the moment they drop.**
 
 [![Bot status](https://img.shields.io/github/actions/workflow/status/pi0trdotsys/iBetaBot/ibeta_bot.yml?branch=main&label=bot%20status)](https://github.com/pi0trdotsys/iBetaBot/actions/workflows/ibeta_bot.yml)
+[![Tests](https://img.shields.io/github/actions/workflow/status/pi0trdotsys/iBetaBot/tests.yml?branch=main&label=tests)](https://github.com/pi0trdotsys/iBetaBot/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/github/license/pi0trdotsys/iBetaBot)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/pi0trdotsys/iBetaBot)](https://github.com/pi0trdotsys/iBetaBot/commits/main)
@@ -16,7 +17,7 @@
 No refreshing IPSW.dev, no missed builds, no noise. iBetaBot watches Apple's beta pipeline for you and only speaks up when something actually changes — cron-ready, dependency-light, and running for free on GitHub's own infrastructure.
 
 - 🔭 **Continuous monitoring** — scrapes [IPSW.dev](https://ipsw.dev/) on a 30-minute schedule for new iOS, iPadOS, macOS, tvOS, visionOS, and audioOS builds.
-- 🎯 **Signal, not spam** — persists the last known release state and only notifies on genuine version changes; a transient page hiccup gets one retry before it's ever treated as a real break.
+- 🎯 **Signal, not spam** — tracks the *full* set of known releases (not just the page's first entry), so a new build is never missed just because it isn't listed first, and notifications call out only what's actually new instead of resending the whole listing every time; a transient page hiccup gets one retry before it's ever treated as a real break.
 - 💬 **Readable Telegram alerts** — releases are grouped by version, bolded, and monospaced instead of dumped as a flat list.
 - 🧭 **Public Beta context** — every alert includes a historical note on when the Public Beta typically follows a given Developer Beta.
 - 💓 **Daily heartbeat** — one quiet ping every day confirms the bot is alive even when nothing new has shipped.
@@ -25,8 +26,8 @@ No refreshing IPSW.dev, no missed builds, no noise. iBetaBot watches Apple's bet
 ## How it works
 
 1. Fetches the latest builds from IPSW.dev.
-2. Compares them against the last known state (`ibeta_last_state.txt`).
-3. On a genuine change, sends a formatted Telegram message and updates the state.
+2. Compares them against the full set of previously known releases (`ibeta_last_state.txt`).
+3. On any genuinely new release, sends a Telegram message naming just what's new and updates the state.
 4. Once per UTC day, sends a heartbeat regardless of whether anything changed.
 
 ## Running via GitHub Actions (recommended)
@@ -57,6 +58,15 @@ python ibeta_bot.py
 ```
 
 Pair it with your own cron/launchd schedule if you'd rather self-host than use GitHub Actions.
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest -v
+```
+
+The [`tests/`](tests/) suite covers state persistence, the retry/parse-error handling, heartbeat cadence, and — as a standing regression test — the exact duplicate-announcement bug that once shipped in production. A separate [`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs it on every push and pull request, independent of the bot's own scheduled workflow.
 
 ## License
 

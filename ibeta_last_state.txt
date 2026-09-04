@@ -1,1 +1,13 @@
+audioOS 26.6 RC (23L772) | July 20, 2026
+audioOS 27.0 beta 8 (24J5360a) | August 31, 2026
+iOS 18.7.10 RC (22H373) | August 10, 2026
+iOS 26.6.1 RC (23G82) | August 10, 2026
 iOS 27.0 beta 8 (24A5430a) | August 31, 2026
+iPadOS 26.6.1 RC (23G82) | August 10, 2026
+iPadOS 27.0 beta 8 (24A5430a) | August 31, 2026
+macOS 26.7 RC 3 (25G227) | August 31, 2026
+macOS 27.0 beta 8 (26A5425a) | August 31, 2026
+tvOS 26.6 RC (23L772) | July 20, 2026
+tvOS 27.0 beta 8 (24J5360a) | August 31, 2026
+visionOS 26.6 RC (23O770) | July 20, 2026
+visionOS 27.0 beta 8 (24M5361a) | August 31, 2026

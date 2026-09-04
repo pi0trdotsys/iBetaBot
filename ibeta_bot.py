@@ -63,6 +63,21 @@ def save_state(state):
         f.write(state)
 
 
+def get_last_release_keys():
+    """STATE_FILE holds the full set of currently-known release keys, one per
+    line (sorted), instead of just the single most-recent one. This means a
+    genuinely new release is never missed just because it isn't first in the
+    page's own ordering, and lets us report only what's actually new."""
+    raw = get_last_state()
+    if not raw:
+        return set()
+    return {line for line in raw.split("\n") if line}
+
+
+def save_release_keys(keys):
+    save_state("\n".join(sorted(keys)))
+
+
 def get_last_heartbeat_date():
     if not os.path.exists(HEARTBEAT_FILE):
         return ""
@@ -122,11 +137,11 @@ def send_heartbeat_if_due():
     if get_last_heartbeat_date() == today:
         return
 
-    known_release = get_last_state() or None
+    tracked = get_last_release_keys()
 
     lines = ["✅ <b>iBetaBot heartbeat</b> — bot is running fine."]
-    if known_release:
-        lines.append(f"Last known version: <code>{html.escape(known_release)}</code>")
+    if tracked:
+        lines.append(f"Tracking <b>{len(tracked)}</b> known release(s).")
     lines.append(f"Checked: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
 
     if send_telegram("\n".join(lines)):
@@ -176,10 +191,20 @@ def _system_sort_key(system):
         return len(SYSTEM_ORDER)
 
 
+def release_key(system, version, suffix, build, date_text):
+    """Canonical identity string for one release, used both as the persisted
+    state entry and as the set-membership key for detecting what's new."""
+    full_version = f"{system.strip()} {version.strip()}"
+    if suffix.strip():
+        full_version += f" {suffix.strip()}"
+    return f"{full_version} ({build.strip()}) | {date_text.strip()}"
+
+
 def build_release_message(matches):
     """Groups the raw regex matches by OS version (e.g. all 27.0 builds
     together, all 26.6 builds together) instead of the site's interleaved
-    order, so related platforms read as one block."""
+    order, so related platforms read as one block. Expects only the NEWLY
+    detected matches - not the full always-repeated page listing."""
     groups = {}
     for system, version, suffix, build, date_text in matches:
         groups.setdefault(version.strip(), []).append(
@@ -197,8 +222,9 @@ def build_release_message(matches):
             lines.append(f"🔹 {label} — <code>{html.escape(build)}</code> ({html.escape(date_text)})")
         sections.append("\n".join(lines))
 
+    header = "🆕 <b>New beta release detected!</b>" if len(matches) == 1 else "🆕 <b>New beta releases detected!</b>"
     return (
-        "🚀 <b>New beta releases available!</b>\n\n"
+        f"{header}\n\n"
         f"ℹ️ <i>{html.escape(PUBLIC_BETA_NOTE)}</i>\n\n"
         + "\n\n".join(sections)
         + f"\n\n🌐 <a href=\"{URL}\">Details</a>"
@@ -206,7 +232,7 @@ def build_release_message(matches):
 
 
 def run():
-    last_state = get_last_state()
+    last_keys = get_last_release_keys()
 
     try:
         page_html = fetch_html()
@@ -251,25 +277,21 @@ def run():
     # alerts again instead of staying silent forever.
     set_parse_error_flag(False)
 
-    releases = []
-    for system, version, suffix, build, date_text in matches:
-        # Add suffix (beta N / RC / v2 etc.) if present
-        full_version = f"{system} {version}"
-        if suffix:
-            full_version += f" {suffix}"
-        releases.append((full_version, build.strip(), date_text.strip()))
+    # Compare the FULL current set of releases against the full stored set,
+    # not just the page's first entry - a genuinely new release can't be
+    # missed just because ipsw.dev doesn't list it first. Only the entries
+    # that are actually new get reported, instead of resending the whole
+    # always-repeated listing every time anything changes.
+    current_keys = {release_key(*m) for m in matches}
+    new_keys = current_keys - last_keys
 
-    # Current state = latest version + its build + its date
-    first_release, first_build, first_date = releases[0]
-    current_state = f"{first_release} ({first_build}) | {first_date}"
-
-    # If state changed (or file was empty) → notify
-    if last_state != current_state:
-        message = build_release_message(matches)
+    if new_keys:
+        new_matches = [m for m in matches if release_key(*m) in new_keys]
+        message = build_release_message(new_matches)
 
         if send_telegram(message):
-            save_state(current_state)
-            logger.info("New release saved as last state")
+            save_release_keys(current_keys)
+            logger.info("%d new release(s) saved to state", len(new_keys))
         else:
             logger.error("Telegram send failed – state NOT updated, will retry next run")
     else:

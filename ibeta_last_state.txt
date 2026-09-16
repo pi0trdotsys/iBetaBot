@@ -1,10 +1,6 @@
-audioOS 27.0 (24J361) | September 14, 2026
-iOS 18.7.10 RC (22H373) | August 10, 2026
-iOS 26.7 RC (23H24) | September 9, 2026
-iOS 27.0 (24A437) | September 14, 2026
-iPadOS 26.7 RC (23H24) | September 9, 2026
-iPadOS 27.0 (24A437) | September 14, 2026
-macOS 26.7 RC 4 (25G229) | September 9, 2026
-macOS 27.0 RC (26A428) | September 9, 2026
-tvOS 27.0 (24J361) | September 14, 2026
-visionOS 27.0 RC (24M362) | September 9, 2026
+audioOS 27.2 beta (24K5088l) | September 16, 2026
+iOS 27.2 beta (24B5084k) | September 16, 2026
+iPadOS 27.2 beta (24B5084k) | September 16, 2026
+macOS 27.2 beta (26B5086k) | September 16, 2026
+tvOS 27.2 beta (24K5088l) | September 16, 2026
+visionOS 27.2 beta (24N5088l) | September 16, 2026

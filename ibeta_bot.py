@@ -207,7 +207,21 @@ def parse_releases(page_html):
 
 def fetch_html():
     headers = {"User-Agent": "Mozilla/5.0"}
-    return session.get(URL, headers=headers, timeout=10).text
+    response = session.get(URL, headers=headers, timeout=10)
+    logger.info("Fetched %s: HTTP %s, %d bytes", URL, response.status_code, len(response.content))
+    return response.text
+
+
+def describe_page(page_html):
+    """One-line summary of what the page looks like, logged when parsing finds
+    nothing - tells a markup change apart from a block/consent/error page
+    (which is what a datacenter IP may get) without having to guess."""
+    title = re.search(r"<title[^>]*>(.*?)</title>", page_html, re.DOTALL | re.IGNORECASE)
+    return "title=%r, build links=%d, length=%d" % (
+        html.unescape(title.group(1).strip())[:120] if title else None,
+        len(BUILD_LINK_PATTERN.findall(page_html)),
+        len(page_html),
+    )
 
 
 def _version_sort_key(version):
@@ -295,7 +309,7 @@ def run():
         matches = parse_releases(page_html)
 
     if not matches:
-        logger.error("No releases found in HTML – page structure may have changed")
+        logger.error("No releases found in HTML – page structure may have changed (%s)", describe_page(page_html))
         # Alert once, not on every cron run, until the page is parseable again.
         # Tracked separately from STATE_FILE so a failure never clobbers the
         # last known real release (previously caused a spurious "new release"

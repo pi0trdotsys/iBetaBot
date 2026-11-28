@@ -292,3 +292,14 @@ class TestHeartbeat:
             bot.send_heartbeat_if_due()
 
         assert "running fine" in sent[0]
+
+
+class TestDescribePage:
+    def test_summarises_title_links_and_length(self):
+        page = "<html><head><title>Just a moment...</title></head></html>"
+        summary = bot.describe_page(page)
+        assert "Just a moment..." in summary and "build links=0" in summary
+
+    def test_counts_build_links_and_survives_missing_title(self):
+        summary = bot.describe_page(html_for([A, B]))
+        assert "title=None" in summary and "build links=2" in summary

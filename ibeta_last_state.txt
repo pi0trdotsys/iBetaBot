@@ -1,6 +1,12 @@
-audioOS 27.2 Beta 2 (24K5093g) | September 21, 2026
-iOS 27.2 Beta 2 (24B5089g) | September 21, 2026
-iPadOS 27.2 Beta 2 (24B5089g) | September 21, 2026
-macOS 27.2 Beta 2 (26B5091g) | September 21, 2026
-tvOS 27.2 Beta 2 (24K5093g) | September 21, 2026
-visionOS 27.2 Beta 2 (24N5093f) | September 21, 2026
+audioOS 27.2 Beta 2 (24K5093g)
+iOS 27.2 Beta 2 (24B5089g)
+iOS 27.3 beta 2 v2 (24C5049f)
+iPadOS 27.2 Beta 2 (24B5089g)
+iPadOS 27.3 beta 2 v2 (24C5049f)
+macOS 27.2 Beta 2 (26B5091g)
+macOS 27.3 beta 2 (26C5047e)
+tvOS 27.2 Beta 2 (24K5093g)
+tvOS 27.3 beta 2 (24K5298d)
+visionOS 27.2 Beta 2 (24N5093f)
+visionOS 27.3 beta 2 (24N5298d)
+watchOS 27.3 beta 2 (24S5296d)

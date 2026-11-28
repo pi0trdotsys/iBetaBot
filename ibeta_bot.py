@@ -21,7 +21,8 @@ load_dotenv()  # expects .env file in same directory
 # Apple's official developer releases feed. It replaced scraping ipsw.dev, which started
 # answering GitHub's datacenter IPs with a Cloudflare challenge (HTTP 403) - and whose
 # markup had already changed twice. A feed has a stable, documented shape and no bot wall.
-# (ibeta_ipsw.py still reads ipsw.dev, from a Mac, for the products this feed lacks.)
+# (ibeta_ipsw.py still reads ipsw.dev, from a separate always-on machine, for the products
+# this feed lacks.)
 FEED_URL = "https://developer.apple.com/news/releases/rss/releases.rss"
 DETAILS_URL = "https://developer.apple.com/news/releases/"
 # Releases older than this are never announced - stops a fresh install, a lost state
@@ -117,7 +118,7 @@ def _banner(title):
 # STATE MANAGEMENT
 # -------------------------------
 # Every helper takes an optional path so a second tracker (ibeta_ipsw.py, running
-# on a Mac) can keep its own, machine-local state with the very same code. The
+# on another machine) can keep its own, machine-local state with the very same code. The
 # default is resolved at call time, so the module-level constants stay patchable.
 def get_last_state(path=None):
     path = path or STATE_FILE

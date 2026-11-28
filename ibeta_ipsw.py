@@ -3,8 +3,11 @@
 
 Apple's releases feed (ibeta_bot.py, runs on GitHub Actions) does not carry these
 two products, ipsw.dev does. ipsw.dev answers GitHub's datacenter IPs with a
-Cloudflare challenge (HTTP 403) but serves a normal home connection fine, so this
-runs from a LaunchAgent on a Mac instead of from Actions.
+Cloudflare challenge (HTTP 403), so this runs on a separate always-on machine
+(cron / a timer) instead of from Actions. Whether ipsw.dev lets that machine
+through depends on its IP: a home or small-VPS address usually passes, a big
+cloud range may not - in which case the agent raises one "source down" alert
+naming the HTTP status.
 
 It reuses the bot's formatting, Telegram sending and state/alert/heartbeat logic,
 but keeps its own machine-local state (ibeta_ipsw_*.txt, git-ignored): it must not
@@ -99,11 +102,11 @@ def run():
     try:
         cards, failure_reason = core.read_with_one_retry(load_cards)
     except requests.RequestException as e:
-        # Mac just woke up and the network isn't back yet, etc. - not worth an alert.
+        # DNS/network blip, a reboot before the network is up, etc. - not worth an alert.
         logger.error("Failed to fetch %s: %s", IPSW_URL, e)
         return
 
-    heartbeat = dict(source_label="ipsw.dev (Mac agent)", heartbeat_file=HEARTBEAT_FILE, state_file=STATE_FILE, flag_file=FLAG_FILE)
+    heartbeat = dict(source_label="ipsw.dev agent", heartbeat_file=HEARTBEAT_FILE, state_file=STATE_FILE, flag_file=FLAG_FILE)
 
     if cards is None:
         logger.error("ipsw.dev unusable: %s", failure_reason)

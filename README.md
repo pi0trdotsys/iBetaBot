@@ -20,7 +20,7 @@ No refreshing Apple's release pages, no missed builds, no noise. iBetaBot watche
 - 🎯 **Signal, not spam** — tracks the *full* set of known releases (not just the page's first entry), so a new build is never missed just because it isn't listed first, and notifications call out only what's actually new instead of resending the whole listing every time; a transient page hiccup gets one retry before it's ever treated as a real break.
 - 💬 **Telegram alerts that are a pleasure to read** — a banner and a one-line summary, builds grouped by version with a stage emoji (🧪 beta · 🏁 RC · 📦 release), a platform emoji per line (📱 iOS · 📲 iPadOS · 💻 macOS · 📺 tvOS · 🥽 visionOS · ⌚ watchOS · 🔊 audioOS · 🏠 HomeView), monospaced build numbers and short dates. The same look is used for the heartbeat and for source-down alerts.
 - 🧭 **Public Beta context** — alerts that contain a beta carry a historical note on when the Public Beta typically follows a given Developer Beta.
-- 🔊 **audioOS & HomeView too** — Apple's feed doesn't carry them, so a small [Mac agent](#mac-agent-audioos--homeview) reads them from ipsw.dev.
+- 🔊 **audioOS & HomeView too** — Apple's feed doesn't carry them, so a small [always-on agent](#always-on-agent-audioos--homeview) reads them from ipsw.dev.
 - 💓 **Honest daily heartbeat** — one quiet ping every day confirms the bot is alive even when nothing new has shipped, and it says so loudly if the feed can't be read, instead of claiming everything is fine.
 - ☁️ **Zero-maintenance hosting** — runs on GitHub Actions, so it keeps working while your machine is off or asleep.
 
@@ -44,33 +44,30 @@ To enable it, add two repository secrets under **Settings → Secrets and variab
 
 You can also trigger a run on demand from the **Actions** tab (`workflow_dispatch`).
 
-## Mac agent (audioOS & HomeView)
+## Always-on agent (audioOS & HomeView)
 
-[`ibeta_ipsw.py`](ibeta_ipsw.py) covers the two products Apple's feed lacks, using [ipsw.dev](https://ipsw.dev/). ipsw.dev answers GitHub's datacenter IPs with a Cloudflare challenge but serves a normal home connection fine, so this part runs on a Mac via a LaunchAgent rather than on Actions. It reuses the bot's formatting, Telegram sending, one-alert-per-outage flag and daily heartbeat, but keeps its own **machine-local, git-ignored** state (`ibeta_ipsw_*.txt`), so it never collides with what the workflow commits. The two trackers cover disjoint product lists, so nothing is announced twice. Its heartbeat is labelled *ipsw.dev (Mac agent)* so you can tell the two daily pings apart.
+[`ibeta_ipsw.py`](ibeta_ipsw.py) covers the two products Apple's feed lacks, using [ipsw.dev](https://ipsw.dev/). ipsw.dev answers GitHub's datacenter IPs with a Cloudflare challenge, so this part runs on a separate always-on machine (a home server, a small VPS) from cron instead of on Actions. It reuses the bot's formatting, Telegram sending, one-alert-per-outage flag and daily heartbeat, but keeps its own **machine-local, git-ignored** state (`ibeta_ipsw_*.txt`), so it never collides with what the workflow commits. The two trackers cover disjoint product lists, so nothing is announced twice. Its heartbeat is labelled *ipsw.dev agent* so you can tell the two daily pings apart.
 
-1. Create `.env` next to the scripts (it's git-ignored) from [`.env.example`](.env.example) — the same `TELEGRAM_TOKEN` / `CHAT_ID` as the repository secrets.
-2. Save this as `~/Library/LaunchAgents/pl.ibetabot.ipsw.plist`, adjusting the two paths:
+> **Whether it works depends on the machine's IP.** A home or small-VPS address usually passes; a big cloud provider's range may get the same Cloudflare challenge as GitHub. If so the agent sends one "source down" alert with the HTTP status (e.g. `HTTP 403 (title='Just a moment...')`) and the daily heartbeat says *Failing* until it can read the page again.
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>pl.ibetabot.ipsw</string>
-  <key>ProgramArguments</key><array>
-    <string>/path/to/python3</string>
-    <string>/path/to/iBetaBot/ibeta_ipsw.py</string>
-  </array>
-  <key>WorkingDirectory</key><string>/path/to/iBetaBot</string>
-  <key>StartInterval</key><integer>1800</integer>
-  <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>/Users/you/Library/Logs/iBetaBot/ipsw.out.log</string>
-  <key>StandardErrorPath</key><string>/Users/you/Library/Logs/iBetaBot/ipsw.err.log</string>
-</dict></plist>
+On the server (Linux, Python 3.12+):
+
+```bash
+git clone https://github.com/pi0trdotsys/iBetaBot.git && cd iBetaBot
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env && chmod 600 .env     # then fill in TELEGRAM_TOKEN and CHAT_ID (same as the repo secrets)
+
+.venv/bin/python ibeta_ipsw.py             # try it once by hand
+crontab -e
 ```
 
-3. `mkdir -p ~/Library/Logs/iBetaBot && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/pl.ibetabot.ipsw.plist` (add `launchctl kickstart -k gui/$(id -u)/pl.ibetabot.ipsw` to run it right away).
+and add (every 30 minutes, appending to a log):
 
-While the Mac sleeps nothing runs; launchd fires a missed tick once after wake.
+```cron
+*/30 * * * * cd /home/you/iBetaBot && .venv/bin/python ibeta_ipsw.py >> /home/you/iBetaBot/ipsw.log 2>&1
+```
+
+`.env` is picked up from the repository directory, so the `cd` matters. A `systemd` timer works just as well if you prefer one. The first run announces whatever audioOS / HomeView builds are younger than 30 days. Network hiccups are logged and skipped without an alert; keep an eye on `ipsw.log` (and rotate it) if the daily heartbeat ever stops arriving.
 
 ## Running locally
 
@@ -86,7 +83,7 @@ pip install -r requirements.txt
 python ibeta_bot.py
 ```
 
-Pair it with your own cron/launchd schedule if you'd rather self-host than use GitHub Actions.
+Pair it with your own cron/systemd schedule if you'd rather self-host than use GitHub Actions.
 
 ## Testing
 

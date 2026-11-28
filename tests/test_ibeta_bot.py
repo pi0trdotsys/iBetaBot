@@ -422,8 +422,8 @@ class TestPerTrackerState:
         bot.save_release_keys({"x (1)", "y (2)"}, state)
         sent = []
         with patch.object(bot, "send_telegram", side_effect=sending(sent)):
-            bot.send_heartbeat_if_due("ipsw.dev (Mac agent)", beat, state, flag)
-        assert "ipsw.dev (Mac agent)" in sent[0] and "Tracking <b>2</b>" in sent[0]
+            bot.send_heartbeat_if_due("ipsw.dev agent", beat, state, flag)
+        assert "ipsw.dev agent" in sent[0] and "Tracking <b>2</b>" in sent[0]
         assert bot.get_last_heartbeat_date(beat) != "" and bot.get_last_heartbeat_date() == ""
 
 

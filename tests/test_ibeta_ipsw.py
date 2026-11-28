@@ -183,5 +183,5 @@ class TestRun:
             ipsw.run()
 
         beats = [m for m in sent if "heartbeat" in m]
-        assert len(beats) == 1 and "ipsw.dev (Mac agent)" in beats[0] and "Tracking <b>1</b>" in beats[0]
+        assert len(beats) == 1 and "ipsw.dev agent" in beats[0] and "Tracking <b>1</b>" in beats[0]
         assert (tmp_path / "ipsw_heartbeat.txt").exists() and not (tmp_path / "bot_heartbeat.txt").exists()

@@ -14,18 +14,18 @@
 
 ## Why iBetaBot
 
-No refreshing IPSW.dev, no missed builds, no noise. iBetaBot watches Apple's beta pipeline for you and only speaks up when something actually changes — cron-ready, dependency-light, and running for free on GitHub's own infrastructure.
+No refreshing Apple's release pages, no missed builds, no noise. iBetaBot watches Apple's beta pipeline for you and only speaks up when something actually changes — cron-ready, dependency-light, and running for free on GitHub's own infrastructure.
 
-- 🔭 **Continuous monitoring** — scrapes [IPSW.dev](https://ipsw.dev/) on a 30-minute schedule for new iOS, iPadOS, macOS, tvOS, visionOS, and audioOS builds.
+- 🔭 **Continuous monitoring** — reads Apple's official [developer releases feed](https://developer.apple.com/news/releases/) on a 30-minute schedule for new iOS, iPadOS, macOS, tvOS, visionOS and watchOS beta / RC builds. (It used to scrape IPSW.dev, which now blocks GitHub's servers with a Cloudflare challenge.)
 - 🎯 **Signal, not spam** — tracks the *full* set of known releases (not just the page's first entry), so a new build is never missed just because it isn't listed first, and notifications call out only what's actually new instead of resending the whole listing every time; a transient page hiccup gets one retry before it's ever treated as a real break.
 - 💬 **Readable Telegram alerts** — releases are grouped by version, bolded, and monospaced instead of dumped as a flat list.
 - 🧭 **Public Beta context** — every alert includes a historical note on when the Public Beta typically follows a given Developer Beta.
-- 💓 **Daily heartbeat** — one quiet ping every day confirms the bot is alive even when nothing new has shipped.
+- 💓 **Honest daily heartbeat** — one quiet ping every day confirms the bot is alive even when nothing new has shipped, and it says so loudly if the feed can't be read, instead of claiming everything is fine.
 - ☁️ **Zero-maintenance hosting** — runs on GitHub Actions, so it keeps working while your machine is off or asleep.
 
 ## How it works
 
-1. Fetches the latest builds from IPSW.dev.
+1. Fetches Apple's releases feed and keeps the beta / RC builds of Apple's operating systems (releases older than 30 days are never announced).
 2. Compares them against the full set of previously known releases (`ibeta_last_state.txt`).
 3. On any genuinely new release, sends a Telegram message naming just what's new and updates the state.
 4. Once per UTC day, sends a heartbeat regardless of whether anything changed.

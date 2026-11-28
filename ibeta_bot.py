@@ -5,7 +5,8 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
+import xml.etree.ElementTree as ET
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 from dotenv import load_dotenv
@@ -17,7 +18,14 @@ from urllib3.util.retry import Retry
 # -------------------------------
 load_dotenv()  # expects .env file in same directory
 
-URL = "https://ipsw.dev/"
+# Apple's official developer releases feed. It replaced scraping ipsw.dev, which started
+# answering GitHub's datacenter IPs with a Cloudflare challenge (HTTP 403) - and whose
+# markup had already changed twice. A feed has a stable, documented shape and no bot wall.
+FEED_URL = "https://developer.apple.com/news/releases/rss/releases.rss"
+DETAILS_URL = "https://developer.apple.com/news/releases/"
+# Releases older than this are never announced - stops a fresh install, a lost state
+# file or a source switch from replaying weeks of stale history as "new".
+MAX_AGE_DAYS = 30
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
@@ -148,7 +156,7 @@ def send_heartbeat_if_due():
     if get_parse_error_flag():
         lines = [
             "⚠️ <b>iBetaBot heartbeat</b> — the bot is running, but the scraper is "
-            "<b>failing</b>: no releases can be read from the page, so new builds are NOT being detected."
+            "<b>failing</b>: the releases feed cannot be read, so new builds are NOT being detected."
         ]
     else:
         lines = ["✅ <b>iBetaBot heartbeat</b> — bot is running fine."]
@@ -163,7 +171,7 @@ def send_heartbeat_if_due():
 # -------------------------------
 # MAIN FUNCTION
 # -------------------------------
-# Historical pattern only (ipsw.dev tracks developer betas exclusively, there's
+# Historical pattern only (the feed lists developer builds exclusively, there's
 # no live public-beta source to compute an exact offset): Apple's Public Beta
 # has usually landed around Developer Beta 3, but slipped to Beta 4 for iOS 26
 # due to the Liquid Glass redesign, and point releases (x.y) tend to lag less
@@ -176,52 +184,59 @@ PUBLIC_BETA_NOTE = (
 # Apple's conventional platform ordering, used to sort each version group
 SYSTEM_ORDER = ["iOS", "iPadOS", "macOS", "tvOS", "visionOS", "audioOS", "watchOS"]
 
-# The parser deliberately keys on structure, not on CSS classes: every release
-# is an <a href="/build/<build>"> card whose last three <p> elements are
-# title, build and date. ipsw.dev has restyled (and swapped h3/span for p) twice
-# already, and each time a class-based regex silently stopped matching anything.
-BUILD_LINK_PATTERN = re.compile(r'<a\s+href="/build/([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
-PARAGRAPH_PATTERN = re.compile(r'<p[^>]*>\s*([^<]*?)\s*</p>')
-TITLE_PATTERN = re.compile(r'^(.*?)\s+(\d+(?:\.\d+)*)\s*(.*)$')
+class SourceError(Exception):
+    """The releases feed could not be read (bad HTTP status, not XML, no items)."""
 
 
-def parse_releases(page_html):
-    """Returns (system, version, suffix, build, date_text) tuples for every
-    dated release card. Cards with fewer than three paragraphs (the stable-
-    release section lists name + build only, no date) are not beta/RC
-    announcements and are skipped."""
+# "iOS 27.3 beta 2 v2 (24C5049f)" -> system, version, label, build
+TITLE_PATTERN = re.compile(r"^(.*?)\s+(\d+(?:\.\d+)*)\s*(.*?)\s*\(([0-9A-Za-z]+)\)$")
+PRERELEASE_LABEL_PATTERN = re.compile(r"\b(beta|RC)\b", re.IGNORECASE)
+PUBDATE_PATTERN = re.compile(r"(\d{1,2})\s+([A-Za-z]{3})[a-z]*\s+(\d{4})")
+MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def load_feed_entries():
+    """Fetches the feed and returns [(title, pubDate)] for every item. Raises
+    SourceError when what came back is not a usable feed, with a reason that is
+    safe to put in an alert (a datacenter block, an HTML error page, ...)."""
+    response = session.get(FEED_URL, headers={"User-Agent": "iBetaBot"}, timeout=10)
+    logger.info("Fetched %s: HTTP %s, %d bytes", FEED_URL, response.status_code, len(response.content))
+    if response.status_code != 200:
+        raise SourceError(f"HTTP {response.status_code}")
+    try:
+        root = ET.fromstring(response.content)
+    except ET.ParseError as e:
+        raise SourceError(f"response is not valid XML ({e})") from None
+    items = root.findall("./channel/item")
+    if not items:
+        raise SourceError("the feed contains no items")
+    return [(item.findtext("title", "").strip(), item.findtext("pubDate", "").strip()) for item in items]
+
+
+def parse_releases(entries, today=None):
+    """Turns feed entries into (system, version, label, build, date_text) tuples
+    for beta/RC builds of Apple's operating systems only: final releases, Xcode,
+    TestFlight, App Store Connect etc. are not what this bot announces. Entries
+    older than MAX_AGE_DAYS are dropped (see the constant)."""
+    today = today or datetime.now(timezone.utc).date()
     releases = []
-    for href_build, inner in BUILD_LINK_PATTERN.findall(page_html):
-        paragraphs = [html.unescape(p) for p in PARAGRAPH_PATTERN.findall(inner)]
-        if len(paragraphs) < 3:
-            continue
-        title, build, date_text = paragraphs[-3:]
+    for title, pub_date in entries:
         title_match = TITLE_PATTERN.match(title)
-        if not title_match or build != href_build:
-            logger.warning("Skipping unrecognised release card: %r", paragraphs)
+        if not title_match:
             continue
-        system, version, suffix = title_match.groups()
-        releases.append((system, version, suffix, build, date_text))
+        system, version, label, build = title_match.groups()
+        if system not in SYSTEM_ORDER or not PRERELEASE_LABEL_PATTERN.search(label):
+            continue
+
+        date_text = pub_date
+        date_match = PUBDATE_PATTERN.search(pub_date)
+        if date_match and date_match.group(2).title() in MONTHS:
+            day, month, year = int(date_match.group(1)), MONTHS.index(date_match.group(2).title()) + 1, int(date_match.group(3))
+            if (today - date(year, month, day)).days > MAX_AGE_DAYS:
+                continue
+            date_text = f"{MONTHS[month - 1]} {day}, {year}"
+        releases.append((system, version, label, build, date_text))
     return releases
-
-
-def fetch_html():
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = session.get(URL, headers=headers, timeout=10)
-    logger.info("Fetched %s: HTTP %s, %d bytes", URL, response.status_code, len(response.content))
-    return response.text
-
-
-def describe_page(page_html):
-    """One-line summary of what the page looks like, logged when parsing finds
-    nothing - tells a markup change apart from a block/consent/error page
-    (which is what a datacenter IP may get) without having to guess."""
-    title = re.search(r"<title[^>]*>(.*?)</title>", page_html, re.DOTALL | re.IGNORECASE)
-    return "title=%r, build links=%d, length=%d" % (
-        html.unescape(title.group(1).strip())[:120] if title else None,
-        len(BUILD_LINK_PATTERN.findall(page_html)),
-        len(page_html),
-    )
 
 
 def _version_sort_key(version):
@@ -244,7 +259,7 @@ def release_key(system, version, suffix, build, date_text=""):
 
     The date is accepted (so callers can pass a whole parsed tuple) but is NOT
     part of the identity: system + version + label + build already pins down a
-    release, and ipsw.dev changed its date format once ("August 10, 2026" ->
+    release, and the date format has already changed between sources ("August 10, 2026" vs
     "Nov 19, 2026"), which would otherwise re-announce every known release."""
     full_version = f"{system.strip()} {version.strip()}"
     if suffix.strip():
@@ -254,9 +269,9 @@ def release_key(system, version, suffix, build, date_text=""):
 
 def build_release_message(matches):
     """Groups the parsed releases by OS version (e.g. all 27.0 builds
-    together, all 26.6 builds together) instead of the site's interleaved
+    together, all 26.6 builds together) instead of the feed's own
     order, so related platforms read as one block. Expects only the NEWLY
-    detected matches - not the full always-repeated page listing."""
+    detected matches - not the full always-repeated feed listing."""
     groups = {}
     for system, version, suffix, build, date_text in matches:
         groups.setdefault(version.strip(), []).append(
@@ -279,61 +294,64 @@ def build_release_message(matches):
         f"{header}\n\n"
         f"ℹ️ <i>{html.escape(PUBLIC_BETA_NOTE)}</i>\n\n"
         + "\n\n".join(sections)
-        + f"\n\n🌐 <a href=\"{URL}\">Details</a>"
+        + f"\n\n🌐 <a href=\"{DETAILS_URL}\">Details</a>"
     )
+
+
+def read_feed_with_one_retry():
+    """Returns (entries, reason). A single bad response can be a transient blip
+    (CDN hiccup, mid-deploy), so it is retried once before being reported as
+    broken. Network-level errors keep their old behaviour: logged, run skipped."""
+    reason = None
+    for attempt in (1, 2):
+        try:
+            return load_feed_entries(), None
+        except SourceError as e:
+            reason = str(e)
+            logger.warning("Feed unusable on attempt %d: %s", attempt, reason)
+            if attempt == 1:
+                time.sleep(5)
+    return None, reason
 
 
 def run():
     last_keys = get_last_release_keys()
 
     try:
-        page_html = fetch_html()
+        entries, failure_reason = read_feed_with_one_retry()
     except requests.RequestException as e:
-        logger.error("Failed to fetch releases from %s: %s", URL, e)
+        logger.error("Failed to fetch %s: %s", FEED_URL, e)
         return
 
-    # Extract all dated release cards: system, version, suffix (beta/RC label), build, date
-    matches = parse_releases(page_html)
-
-    if not matches:
-        # A single empty result can be a transient blip (stale cache, WAF
-        # challenge page, mid-deploy hiccup on their end) rather than a real
-        # markup change, so re-fetch once before treating it as broken.
-        logger.warning("No releases found on first attempt, retrying fetch once...")
-        time.sleep(5)
-        try:
-            page_html = fetch_html()
-        except requests.RequestException as e:
-            logger.error("Retry fetch from %s failed: %s", URL, e)
-            return
-        matches = parse_releases(page_html)
-
-    if not matches:
-        logger.error("No releases found in HTML – page structure may have changed (%s)", describe_page(page_html))
-        # Alert once, not on every cron run, until the page is parseable again.
+    if entries is None:
+        logger.error("Releases feed unusable: %s", failure_reason)
+        # Alert once, not on every cron run, until the feed is readable again.
         # Tracked separately from STATE_FILE so a failure never clobbers the
-        # last known real release (previously caused a spurious "new release"
+        # last known real releases (previously caused a spurious "new release"
         # re-announcement the moment parsing recovered - same version as before).
         if not get_parse_error_flag():
             alert = (
-                "⚠️ <b>iBetaBot: no releases found on the page.</b>\n"
-                "The site structure may have changed and the scraper needs updating.\n"
-                f"🌐 <a href=\"{URL}\">{URL}</a>"
+                "⚠️ <b>iBetaBot: can't read Apple's releases feed.</b>\n"
+                f"Reason: {html.escape(failure_reason)}\n"
+                "New builds are NOT being detected until this is fixed.\n"
+                f"🌐 <a href=\"{FEED_URL}\">{FEED_URL}</a>"
             )
             if send_telegram(alert):
                 set_parse_error_flag(True)
         send_heartbeat_if_due()
         return
 
-    # Parsing succeeded - clear any stale parse-error flag so a FUTURE failure
+    # The feed was readable - clear any stale failure flag so a FUTURE failure
     # alerts again instead of staying silent forever.
     set_parse_error_flag(False)
 
-    # Compare the FULL current set of releases against the full stored set,
-    # not just the page's first entry - a genuinely new release can't be
-    # missed just because ipsw.dev doesn't list it first. Only the entries
-    # that are actually new get reported, instead of resending the whole
-    # always-repeated listing every time anything changes.
+    # An empty list here is NOT an error: between beta cycles the feed can
+    # legitimately hold no beta/RC at all.
+    matches = parse_releases(entries)
+
+    # Compare the FULL current set of releases against the full stored set, so
+    # only entries that are actually new get reported - never a replay of the
+    # whole listing.
     current_keys = {release_key(*m) for m in matches}
     new_keys = current_keys - last_keys
 
@@ -342,7 +360,9 @@ def run():
         message = build_release_message(new_matches)
 
         if send_telegram(message):
-            save_release_keys(current_keys)
+            # Union, not replacement: the feed drops superseded builds, and one
+            # that blips out of a response and back must not be announced twice.
+            save_release_keys(last_keys | current_keys)
             logger.info("%d new release(s) saved to state", len(new_keys))
         else:
             logger.error("Telegram send failed – state NOT updated, will retry next run")

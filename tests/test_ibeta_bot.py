@@ -144,6 +144,7 @@ class TestParseReleases:
         "TestFlight Update",
         "AirPods beta (9A292e)",               # a beta, but no version and not an OS
         "HomeView Software 27.2.1 (24V553)",
+        "audioOS 27.3 beta 2 (24K5298d)",      # tracked from ipsw.dev instead - never twice
     ])
     def test_ignores_everything_that_is_not_an_os_prerelease(self, title):
         assert self.parse((title, "Thu, 19 Nov 2026 13:00:00 PST")) == []
@@ -182,7 +183,7 @@ class TestReleaseKey:
 class TestBuildReleaseMessage:
     def test_groups_by_version_and_sorts_systems(self):
         message = bot.build_release_message([B, A])  # iPadOS before iOS in the input
-        assert message.index("iOS beta 5") < message.index("iPadOS beta 5")
+        assert message.index("<b>iOS</b>") < message.index("<b>iPadOS</b>")
 
     def test_escapes_html_special_characters(self):
         malicious = ("iOS", "27.0", "<script>", "24A<b>", "Aug 1, 2026")
@@ -190,11 +191,12 @@ class TestBuildReleaseMessage:
         assert "<script>" not in message
         assert "&lt;script&gt;" in message
 
-    def test_header_is_singular_for_one_release(self):
-        assert "release detected" in bot.build_release_message([A])
+    def test_summary_is_singular_for_one_release(self):
+        message = bot.build_release_message([A])
+        assert "1 new build<" in message and "1 new builds" not in message
 
-    def test_header_is_plural_for_multiple_releases(self):
-        assert "releases detected" in bot.build_release_message([A, B])
+    def test_summary_counts_builds_and_versions(self):
+        assert "3 new builds · 2 versions" in bot.build_release_message([A, B, C])
 
     def test_links_to_apples_release_page(self):
         assert bot.DETAILS_URL in bot.build_release_message([A])
@@ -266,7 +268,7 @@ class TestFeedFailureHandling:
     def test_transient_bad_response_recovers_via_retry(self):
         sent = []
         run_with(sent, effect=[bot.SourceError("HTTP 503"), entries_for([A])])
-        assert len(sent) == 1 and "New beta release" in sent[0]
+        assert len(sent) == 1 and "1 new build" in sent[0]
         assert bot.get_parse_error_flag() is False
 
     def test_persistent_failure_alerts_once_with_the_reason(self):
@@ -315,7 +317,7 @@ class TestHeartbeat:
             bot.send_heartbeat_if_due()
 
         assert len(sent) == 1
-        assert "Tracking <b>1</b> known release(s)" in sent[0]
+        assert "Tracking <b>1</b> known build(s)" in sent[0]
 
     def test_does_not_resend_same_day(self):
         today = bot.datetime.now(bot.timezone.utc).strftime("%Y-%m-%d")
@@ -334,11 +336,109 @@ class TestHeartbeat:
             bot.send_heartbeat_if_due()
 
         assert len(sent) == 1
-        assert "failing" in sent[0] and "running fine" not in sent[0]
+        assert "Failing" in sent[0] and "Running fine" not in sent[0]
 
     def test_says_fine_when_the_feed_is_healthy(self):
         sent = []
         with patch.object(bot, "get_last_heartbeat_date", return_value="2000-01-01"), \
              patch.object(bot, "send_telegram", side_effect=sending(sent)):
             bot.send_heartbeat_if_due()
-        assert "running fine" in sent[0]
+        assert "Running fine" in sent[0]
+
+
+class TestMessageStyle:
+    def test_has_banner_summary_and_platform_emoji(self):
+        message = bot.build_release_message([A, B])
+        assert message.startswith(bot.SEPARATOR)
+        assert "🍎 <b>iBETABOT</b>" in message
+        assert "📱 <b>iOS</b>" in message and "📲 <b>iPadOS</b>" in message
+
+    def test_group_header_shows_the_stage_of_its_builds(self):
+        assert "🧪 <b>27.0</b>" in bot.build_release_message([A])              # beta
+        assert "🏁 <b>26.6.2</b>" in bot.build_release_message([C])            # RC
+        assert "📦 <b>27.2.1</b>" in bot.build_release_message(
+            [("HomeView Software", "27.2.1", "", "24V553", "Nov 18, 2026")])  # plain release
+
+    def test_a_group_mixing_stages_gets_the_neutral_header(self):
+        mixed = [("iOS", "27.0", "beta 5", "1", ""), ("macOS", "27.0", "RC", "2", "")]
+        assert "📦 <b>27.0</b>" in bot.build_release_message(mixed)
+
+    def test_public_beta_note_only_accompanies_betas(self):
+        assert "<blockquote>" in bot.build_release_message([A])
+        assert "<blockquote>" not in bot.build_release_message([C])            # RC only
+        assert "<blockquote>" not in bot.build_release_message([A], note=None)
+
+    def test_details_link_is_configurable(self):
+        message = bot.build_release_message([A], details=("https://ipsw.dev/", "ipsw.dev"))
+        assert '<a href="https://ipsw.dev/">ipsw.dev</a>' in message
+
+    def test_build_is_monospaced_and_the_current_year_is_dropped_from_dates(self):
+        today = datetime.now(timezone.utc).date()
+        stamp = f"{bot.MONTHS[today.month - 1]} {today.day}, {today.year}"
+        message = bot.build_release_message([("iOS", "27.0", "beta 5", "24A5408d", stamp)])
+        assert "<code>24A5408d</code>" in message
+        assert f", {today.year}" not in message
+
+    def test_short_date(self):
+        today = date(2026, 11, 28)
+        assert bot.short_date("Nov 19, 2026", today) == "Nov 19"
+        assert bot.short_date("November 19, 2025", today) == "Nov 19, 2025"
+        assert bot.short_date("sometime soon", today) == "sometime soon"
+
+    def test_release_stage(self):
+        assert bot.release_stage("beta 2 v2") == "🧪"
+        assert bot.release_stage("RC 3") == "🏁"
+        assert bot.release_stage("") == "📦"
+
+
+class TestPerTrackerState:
+    """ibeta_ipsw.py keeps its own state with the same helpers - files must not mix."""
+
+    def test_helpers_use_the_given_path_and_leave_the_defaults_alone(self, tmp_path):
+        other = str(tmp_path / "other_state.txt")
+        bot.save_release_keys({"a (1)"}, other)
+        assert bot.get_last_release_keys(other) == {"a (1)"}
+        assert bot.get_last_release_keys() == set()
+
+        flag = str(tmp_path / "other_flag.txt")
+        bot.set_parse_error_flag(True, flag)
+        assert bot.get_parse_error_flag(flag) is True and bot.get_parse_error_flag() is False
+
+        beat = str(tmp_path / "other_beat.txt")
+        bot.save_heartbeat_date("2026-01-01", beat)
+        assert bot.get_last_heartbeat_date(beat) == "2026-01-01" and bot.get_last_heartbeat_date() == ""
+
+    def test_failure_alert_uses_its_own_flag(self, tmp_path):
+        flag = str(tmp_path / "flag.txt")
+        sent = []
+        with patch.object(bot, "send_telegram", side_effect=sending(sent)):
+            bot.report_source_failure("ipsw.dev", "https://ipsw.dev/", "HTTP 403", flag_file=flag)
+            bot.report_source_failure("ipsw.dev", "https://ipsw.dev/", "HTTP 403", flag_file=flag)
+        assert len(sent) == 1 and "ipsw.dev" in sent[0] and "HTTP 403" in sent[0]
+        assert bot.get_parse_error_flag(flag) is True and bot.get_parse_error_flag() is False
+
+    def test_heartbeat_names_its_source_and_reads_its_own_files(self, tmp_path):
+        state, beat, flag = (str(tmp_path / n) for n in ("s.txt", "b.txt", "f.txt"))
+        bot.save_release_keys({"x (1)", "y (2)"}, state)
+        sent = []
+        with patch.object(bot, "send_telegram", side_effect=sending(sent)):
+            bot.send_heartbeat_if_due("ipsw.dev (Mac agent)", beat, state, flag)
+        assert "ipsw.dev (Mac agent)" in sent[0] and "Tracking <b>2</b>" in sent[0]
+        assert bot.get_last_heartbeat_date(beat) != "" and bot.get_last_heartbeat_date() == ""
+
+
+class TestEscaping:
+    def test_apostrophes_are_not_turned_into_hex_entities(self):
+        sent = []
+        with patch.object(bot, "send_telegram", side_effect=sending(sent)):
+            bot.report_source_failure("Apple's releases feed", "https://x.test/feed", "it's down")
+        assert "Apple's releases feed" in sent[0] and "it's down" in sent[0]
+        assert "&#x27;" not in sent[0]
+
+    def test_angle_brackets_and_ampersands_are_still_escaped(self):
+        sent = []
+        with patch.object(bot, "send_telegram", side_effect=sending(sent)):
+            bot.report_source_failure("a", "https://x.test/?a=1&b=2", "<b>&</b>")
+        assert "&lt;b&gt;&amp;&lt;/b&gt;" in sent[0]
+        assert 'href="https://x.test/?a=1&amp;b=2"' in sent[0]
+

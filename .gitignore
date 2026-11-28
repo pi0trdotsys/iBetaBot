@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .DS_Store
 .pytest_cache/
+# machine-local state of the Mac agent (ibeta_ipsw.py)
+ibeta_ipsw_*.txt

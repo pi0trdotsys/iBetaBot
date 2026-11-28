@@ -71,7 +71,9 @@ def get_last_release_keys():
     raw = get_last_state()
     if not raw:
         return set()
-    return {line for line in raw.split("\n") if line}
+    # Older state files stored "<release> (<build>) | <date>"; keep only the
+    # identity part so they still compare equal to today's date-less keys.
+    return {line.split(" | ")[0].strip() for line in raw.split("\n") if line.strip()}
 
 
 def save_release_keys(keys):
@@ -139,7 +141,17 @@ def send_heartbeat_if_due():
 
     tracked = get_last_release_keys()
 
-    lines = ["✅ <b>iBetaBot heartbeat</b> — bot is running fine."]
+    # A heartbeat that cheerfully says "fine" while the scraper reads nothing
+    # is worse than no heartbeat: that is exactly how a markup change went
+    # unnoticed for two months. The one-off alert is easy to miss, so the daily
+    # ping carries the warning for as long as parsing keeps failing.
+    if get_parse_error_flag():
+        lines = [
+            "⚠️ <b>iBetaBot heartbeat</b> — the bot is running, but the scraper is "
+            "<b>failing</b>: no releases can be read from the page, so new builds are NOT being detected."
+        ]
+    else:
+        lines = ["✅ <b>iBetaBot heartbeat</b> — bot is running fine."]
     if tracked:
         lines.append(f"Tracking <b>{len(tracked)}</b> known release(s).")
     lines.append(f"Checked: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
@@ -164,12 +176,33 @@ PUBLIC_BETA_NOTE = (
 # Apple's conventional platform ordering, used to sort each version group
 SYSTEM_ORDER = ["iOS", "iPadOS", "macOS", "tvOS", "visionOS", "audioOS", "watchOS"]
 
-RELEASE_PATTERN = re.compile(
-    r'<h3 class="font-semibold text-gray-900 dark:text-gray-100">([A-Za-z]+)\s+([0-9][0-9.]*)\s*(.*?)</h3>\s*'
-    r'<p class="font-mono text-sm">([0-9A-Za-z]+)</p>\s*'
-    r'<p[^>]*>\s*<span class="text-sm">(.*?)</span>',
-    flags=re.DOTALL
-)
+# The parser deliberately keys on structure, not on CSS classes: every release
+# is an <a href="/build/<build>"> card whose last three <p> elements are
+# title, build and date. ipsw.dev has restyled (and swapped h3/span for p) twice
+# already, and each time a class-based regex silently stopped matching anything.
+BUILD_LINK_PATTERN = re.compile(r'<a\s+href="/build/([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
+PARAGRAPH_PATTERN = re.compile(r'<p[^>]*>\s*([^<]*?)\s*</p>')
+TITLE_PATTERN = re.compile(r'^(.*?)\s+(\d+(?:\.\d+)*)\s*(.*)$')
+
+
+def parse_releases(page_html):
+    """Returns (system, version, suffix, build, date_text) tuples for every
+    dated release card. Cards with fewer than three paragraphs (the stable-
+    release section lists name + build only, no date) are not beta/RC
+    announcements and are skipped."""
+    releases = []
+    for href_build, inner in BUILD_LINK_PATTERN.findall(page_html):
+        paragraphs = [html.unescape(p) for p in PARAGRAPH_PATTERN.findall(inner)]
+        if len(paragraphs) < 3:
+            continue
+        title, build, date_text = paragraphs[-3:]
+        title_match = TITLE_PATTERN.match(title)
+        if not title_match or build != href_build:
+            logger.warning("Skipping unrecognised release card: %r", paragraphs)
+            continue
+        system, version, suffix = title_match.groups()
+        releases.append((system, version, suffix, build, date_text))
+    return releases
 
 
 def fetch_html():
@@ -191,17 +224,22 @@ def _system_sort_key(system):
         return len(SYSTEM_ORDER)
 
 
-def release_key(system, version, suffix, build, date_text):
+def release_key(system, version, suffix, build, date_text=""):
     """Canonical identity string for one release, used both as the persisted
-    state entry and as the set-membership key for detecting what's new."""
+    state entry and as the set-membership key for detecting what's new.
+
+    The date is accepted (so callers can pass a whole parsed tuple) but is NOT
+    part of the identity: system + version + label + build already pins down a
+    release, and ipsw.dev changed its date format once ("August 10, 2026" ->
+    "Nov 19, 2026"), which would otherwise re-announce every known release."""
     full_version = f"{system.strip()} {version.strip()}"
     if suffix.strip():
         full_version += f" {suffix.strip()}"
-    return f"{full_version} ({build.strip()}) | {date_text.strip()}"
+    return f"{full_version} ({build.strip()})"
 
 
 def build_release_message(matches):
-    """Groups the raw regex matches by OS version (e.g. all 27.0 builds
+    """Groups the parsed releases by OS version (e.g. all 27.0 builds
     together, all 26.6 builds together) instead of the site's interleaved
     order, so related platforms read as one block. Expects only the NEWLY
     detected matches - not the full always-repeated page listing."""
@@ -240,8 +278,8 @@ def run():
         logger.error("Failed to fetch releases from %s: %s", URL, e)
         return
 
-    # Extract all latest items: system, version, suffix (beta/RC label), build, release date
-    matches = RELEASE_PATTERN.findall(page_html)
+    # Extract all dated release cards: system, version, suffix (beta/RC label), build, date
+    matches = parse_releases(page_html)
 
     if not matches:
         # A single empty result can be a transient blip (stale cache, WAF
@@ -254,7 +292,7 @@ def run():
         except requests.RequestException as e:
             logger.error("Retry fetch from %s failed: %s", URL, e)
             return
-        matches = RELEASE_PATTERN.findall(page_html)
+        matches = parse_releases(page_html)
 
     if not matches:
         logger.error("No releases found in HTML – page structure may have changed")

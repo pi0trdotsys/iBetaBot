@@ -14,17 +14,29 @@ def isolate_state_files(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "PARSE_ERROR_FLAG_FILE", str(tmp_path / "parse_error.txt"))
 
 
+def card(title, build, date_text=None, extra_classes="group shrink-0"):
+    """One ipsw.dev release card in the shape the site uses today. Cards of the
+    stable-release section have no date paragraph."""
+    date_p = f'<p class="text-sm text-gray-800/60">{date_text}</p>' if date_text else ""
+    return f'''
+<a href="/build/{build}" class="{extra_classes}">
+  <div class="h-full rounded-3xl p-5">
+    <picture><img src="/img/os-logo/x.png" alt="" width="56" height="56"></picture>
+    <p class="mt-4 font-semibold text-gray-900">{title}</p>
+    <p class="text-sm font-mono text-pink-600">{build}</p>
+    {date_p}
+  </div>
+</a>
+'''
+
+
 def html_for(items):
-    """Builds a minimal ipsw.dev-shaped HTML snippet for the given releases.
+    """Builds a minimal ipsw.dev-shaped page for the given releases.
     items: list of (system, version, suffix, build, date_text) tuples."""
-    blocks = []
-    for system, version, suffix, build, date_text in items:
-        blocks.append(f'''
-<h3 class="font-semibold text-gray-900 dark:text-gray-100">{system} {version} {suffix}</h3>
-<p class="font-mono text-sm">{build}</p>
-<p class="text-gray-800/60 dark:text-gray-200/60"><span class="text-sm">{date_text}</span></p>
-''')
-    return "\n".join(blocks)
+    return "\n".join(
+        card(f"{system} {version} {suffix}".strip(), build, date_text)
+        for system, version, suffix, build, date_text in items
+    )
 
 
 A = ("iOS", "27.0", "beta 5", "24A5408d", "August 10, 2026")
@@ -67,22 +79,48 @@ class TestStateFiles:
 
 
 class TestReleaseParsing:
-    def test_release_pattern_matches_real_markup(self):
-        matches = bot.RELEASE_PATTERN.findall(html_for([A]))
-        assert len(matches) == 1
-        system, version, suffix, build, date_text = matches[0]
-        assert system == "iOS"
-        assert version == "27.0"
-        assert "beta 5" in suffix
-        assert build == "24A5408d"
-        assert "August 10, 2026" in date_text
+    def test_parses_a_dated_card(self):
+        assert bot.parse_releases(html_for([A])) == [A]
 
-    def test_release_key_format(self):
-        assert bot.release_key(*A) == "iOS 27.0 beta 5 (24A5408d) | August 10, 2026"
+    def test_multiword_system_and_missing_suffix(self):
+        page = card("HomeView Software 27.2.1", "24V553", "Nov 18, 2026")
+        assert bot.parse_releases(page) == [("HomeView Software", "27.2.1", "", "24V553", "Nov 18, 2026")]
 
-    def test_release_key_without_suffix(self):
-        no_suffix = ("iOS", "18.0", "", "22A100", "Jan 1, 2026")
-        assert bot.release_key(*no_suffix) == "iOS 18.0 (22A100) | Jan 1, 2026"
+    def test_ignores_css_classes_entirely(self):
+        """The parser broke twice on restyles; a class change must not matter."""
+        page = card("iOS 27.3 beta 2", "24C5049d", "Nov 16, 2026", extra_classes="totally different classes")
+        assert bot.parse_releases(page) == [("iOS", "27.3", "beta 2", "24C5049d", "Nov 16, 2026")]
+
+    def test_skips_undated_stable_release_cards(self):
+        page = html_for([A]) + card("iOS 27.2", "24B119")
+        assert bot.parse_releases(page) == [A]
+
+    def test_skips_card_whose_build_does_not_match_its_link(self):
+        page = '<a href="/build/AAA"><p>iOS 27.0 beta 1</p><p>BBB</p><p>Nov 1, 2026</p></a>'
+        assert bot.parse_releases(page) == []
+
+    def test_unescapes_html_entities(self):
+        page = card("iOS 27.0 beta &amp; more", "24A1", "Nov 1, 2026")
+        assert bot.parse_releases(page)[0][2] == "beta & more"
+
+    def test_empty_or_unrelated_page_yields_nothing(self):
+        assert bot.parse_releases("<html><body>nothing here</body></html>") == []
+
+
+class TestReleaseKey:
+    def test_key_format(self):
+        assert bot.release_key(*A) == "iOS 27.0 beta 5 (24A5408d)"
+
+    def test_key_without_suffix(self):
+        assert bot.release_key("iOS", "18.0", "", "22A100", "Jan 1, 2026") == "iOS 18.0 (22A100)"
+
+    def test_date_is_not_part_of_the_identity(self):
+        reformatted = A[:4] + ("10 Aug 2026",)
+        assert bot.release_key(*A) == bot.release_key(*reformatted)
+
+    def test_legacy_state_lines_with_dates_still_match(self):
+        bot.save_state("iOS 27.0 beta 5 (24A5408d) | August 10, 2026\niPadOS 27.0 beta 5 (24A5408d) | August 10, 2026")
+        assert bot.get_last_release_keys() == {bot.release_key(*A), bot.release_key(*B)}
 
 
 class TestBuildReleaseMessage:
@@ -236,3 +274,21 @@ class TestHeartbeat:
             bot.send_heartbeat_if_due()
 
         assert sent == []
+
+    def test_warns_instead_of_claiming_all_is_fine_while_scraper_is_failing(self):
+        bot.set_parse_error_flag(True)
+        sent = []
+        with patch.object(bot, "get_last_heartbeat_date", return_value="2000-01-01"), \
+             patch.object(bot, "send_telegram", side_effect=sending(sent)):
+            bot.send_heartbeat_if_due()
+
+        assert len(sent) == 1
+        assert "failing" in sent[0] and "running fine" not in sent[0]
+
+    def test_says_fine_when_scraper_is_healthy(self):
+        sent = []
+        with patch.object(bot, "get_last_heartbeat_date", return_value="2000-01-01"), \
+             patch.object(bot, "send_telegram", side_effect=sending(sent)):
+            bot.send_heartbeat_if_due()
+
+        assert "running fine" in sent[0]
